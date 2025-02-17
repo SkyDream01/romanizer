@@ -71,8 +71,8 @@ python romanizer.py <目标目录> [选项]
 
 ```json
 {
-    "水樹奈々": "Nana Mizuki",
-    ……
+  "林原めぐみ":"Megumi Hayashibara",
+  "水樹奈々": "Nana Mizuki",
 }
 ```
 
