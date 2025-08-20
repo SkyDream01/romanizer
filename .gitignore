@@ -1,0 +1,5 @@
+*.ttf
+__pycache__/
+*.mp4
+*.kproj
+test/
