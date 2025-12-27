@@ -1,372 +1,288 @@
-# RomanizerGUI.py (已更新)
+# RomanizerGUI.py (Optimized)
 
 import sys
 import os
-import json
 import re
 from pathlib import Path
-from typing import Dict, Optional, Tuple
-
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QLabel, QLineEdit, QPushButton, QComboBox, QCheckBox,
-                               QTextEdit, QFileDialog, QGroupBox, QMessageBox, QProgressBar,
+                               QTextEdit, QFileDialog, QGroupBox, QMessageBox, 
                                QListWidget, QListWidgetItem, QSplitter)
 from PySide6.QtCore import Qt, QThread, Signal, QObject
-from PySide6.QtGui import QFont, QTextCursor, QPalette, QColor, QIcon
+from PySide6.QtGui import QFont, QTextCursor, QColor
 
+# 导入优化后的模块
 try:
-    from romanizer import batch_rename, load_dict, pykakasi, convert_filename, ensure_unique
+    from romanizer import Romanizer, load_dict, ILLEGAL_CHARS_RE
 except ImportError:
-    QMessageBox.critical(None, "错误", "无法导入 'romanizer.py'。请确保它与GUI脚本在同一目录下。")
+    QMessageBox.critical(None, "错误", "无法导入 'romanizer.py'。")
     sys.exit(1)
 
-# ... (StreamRedirector 和 RenameWorker 类保持不变) ...
-class StreamRedirector(QObject):
-    """一个将写入操作(如print)重定向到Qt信号的类"""
-    text_written = Signal(str)
-
-    def write(self, text):
-        self.text_written.emit(text)
-
-    def flush(self):
-        pass
-
 class RenameWorker(QThread):
-    """用于在后台执行重命名操作的线程类"""
-    preview_item_signal = Signal(str, str, str) 
-    log_signal = Signal(str)
-    finished_signal = Signal(bool, str)
+    """
+    后台工作线程
     
-    def __init__(self, target_path, lang, style, sep, custom_dict, recursive, dry_run):
+    得益于 romanizer.py 的重构，现在 Worker 的职责非常单一：
+    只需调用核心库的生成器，并转发信号即可。无需重复实现 dry-run 逻辑。
+    """
+    progress_signal = Signal(str, str, str) # src_name, dst_name, status
+    log_signal = Signal(str)
+    finished_signal = Signal(str)
+    
+    def __init__(self, target_path, config):
         super().__init__()
         self.target_path = target_path
-        self.lang = lang
-        self.style = style
-        self.sep = sep
-        self.custom_dict = custom_dict
-        self.recursive = recursive
-        self.dry_run = dry_run
-        self.kks = pykakasi.kakasi()
+        self.config = config # 包含 lang, style, sep, custom_dict, recursive, dry_run
 
     def run(self):
-        redirector = StreamRedirector()
-        redirector.text_written.connect(self.log_signal)
-        original_stdout = sys.stdout
-        sys.stdout = redirector
-        
         try:
-            if self.dry_run:
-                self.log_signal.emit("正在生成预览...\n")
-                if self.target_path.is_file():
-                    files_to_process = [self.target_path]
-                else:
-                    glob_method = self.target_path.rglob if self.recursive else self.target_path.glob
-                    files_to_process = [f for f in glob_method('*') if f.is_file() and not f.name.startswith('.')]
-                
-                rename_map = {}
-                for src_path in files_to_process:
-                    new_filename = convert_filename(
-                        src_path.name, self.lang, self.kks, self.style, self.sep, self.custom_dict, self.dry_run
-                    )
-                    dst_path = src_path.with_name(new_filename)
-                    
-                    if src_path == dst_path:
-                        self.preview_item_signal.emit(src_path.name, new_filename, "skip")
-                        continue
-                    
-                    if dst_path in rename_map.values():
-                        temp_parent = Path("./temp")
-                        unique_stem = dst_path.stem
-                        n = 1
-                        while temp_parent / f"{unique_stem}-{n}{dst_path.suffix}" in rename_map.values():
-                            n += 1
-                        unique_dst_path = temp_parent / f"{unique_stem}-{n}{dst_path.suffix}"
-                        status = "conflict"
-                    else:
-                        unique_dst_path = dst_path
-                        status = "rename"
-                    
-                    rename_map[src_path] = unique_dst_path
-                    self.preview_item_signal.emit(src_path.name, unique_dst_path.name, status)
-                
-                self.log_signal.emit("\n预览生成完毕。")
-            else:
-                self.log_signal.emit("正在执行重命名...\n")
-                batch_rename(
-                    self.target_path,
-                    lang=self.lang,
-                    kks=self.kks,
-                    style=self.style,
-                    sep=self.sep,
-                    custom_dict=self.custom_dict,
-                    dry_run=self.dry_run,
-                    recursive=self.recursive
-                )
+            # 初始化转换器 (耗时操作放在线程中)
+            self.log_signal.emit("正在初始化转换引擎...")
+            converter = Romanizer(
+                lang=self.config['lang'],
+                style=self.config['style'],
+                sep=self.config['sep'],
+                custom_dict=self.config['custom_dict']
+            )
             
-            self.finished_signal.emit(True, "操作完成！")
+            mode_str = "预览" if self.config['dry_run'] else "执行"
+            self.log_signal.emit(f"开始{mode_str}处理...\n")
+
+            count = 0
+            # 调用核心生成器
+            iterator = converter.process_items(
+                self.target_path, 
+                self.config['recursive'], 
+                self.config['dry_run']
+            )
+
+            for src, dst, status in iterator:
+                if status == "error":
+                    self.log_signal.emit(f"[错误] {src.name}: {dst}")
+                    self.progress_signal.emit(src.name, str(dst), "error")
+                elif status == "skip":
+                    # 只有在非Dry-Run或者用户需要看skip详情时才发信号，防止列表过长
+                    # 这里为了演示，我们发信号并在GUI处理显示颜色
+                    self.progress_signal.emit(src.name, dst.name, "skip")
+                else:
+                    arrow = "->"
+                    self.log_signal.emit(f"{src.name} {arrow} {dst.name}")
+                    self.progress_signal.emit(src.name, dst.name, "success")
+                    count += 1
+            
+            self.finished_signal.emit(f"{mode_str}完成，涉及 {count} 个文件。")
             
         except Exception as e:
-            self.finished_signal.emit(False, f"发生错误: {str(e)}")
-        finally:
-            sys.stdout = original_stdout
-
+            self.log_signal.emit(f"\n致命错误: {e}")
+            self.finished_signal.emit("操作因错误中止。")
 
 class RomanizerGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Romanizer - 文件名罗马音转换工具")
+        self.setWindowTitle("Romanizer - 文件名罗马音转换工具 (Optimized)")
         self.setGeometry(100, 100, 1000, 700)
-        
+        self.setup_ui()
         self.worker = None
-        
+
+    def setup_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
         main_layout = QHBoxLayout(central_widget)
         
+        # 左侧控制面板
         control_panel = self.create_control_panel()
-        control_panel.setMaximumWidth(400)
+        control_panel.setMaximumWidth(380)
         main_layout.addWidget(control_panel)
         
+        # 右侧输出面板
         output_panel = self.create_output_panel()
         main_layout.addWidget(output_panel)
         
         self.statusBar().showMessage("就绪")
-    
+
     def create_control_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         
-        path_group = QGroupBox("1. 选择目标")
+        # 1. 路径选择
+        path_group = QGroupBox("1. 目标设置")
         path_layout = QVBoxLayout(path_group)
-        path_input_layout = QHBoxLayout()
+        h_layout = QHBoxLayout()
         self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("选择文件夹或输入文件路径...")
-        self.path_edit.textChanged.connect(self.clear_preview)
-        path_input_layout.addWidget(self.path_edit)
-        self.browse_btn = QPushButton("...")
-        self.browse_btn.setToolTip("浏览文件夹") # <--- UI 文本优化
+        self.path_edit.setPlaceholderText("拖入文件夹或点击浏览...")
+        h_layout.addWidget(self.path_edit)
+        self.browse_btn = QPushButton("浏览")
         self.browse_btn.clicked.connect(self.browse_path)
-        path_input_layout.addWidget(self.browse_btn)
-        path_layout.addLayout(path_input_layout)
-        self.recursive_cb = QCheckBox("递归处理子目录")
+        h_layout.addWidget(self.browse_btn)
+        path_layout.addLayout(h_layout)
+        self.recursive_cb = QCheckBox("递归包含子目录")
         path_layout.addWidget(self.recursive_cb)
         layout.addWidget(path_group)
         
-        options_group = QGroupBox("2. 配置转换规则")
-        options_layout = QVBoxLayout(options_group)
-        grid_layout = QHBoxLayout()
-        grid_layout.addWidget(QLabel("语言:"))
+        # 2. 转换选项
+        opts_group = QGroupBox("2. 转换规则")
+        opts_layout = QVBoxLayout(opts_group)
+        
+        # 语言
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("源语言:"))
         self.lang_combo = QComboBox()
         self.lang_combo.addItems(["日语 (jp)", "中文 (cn)"])
-        grid_layout.addWidget(self.lang_combo, 1)
-        options_layout.addLayout(grid_layout)
+        row1.addWidget(self.lang_combo)
+        opts_layout.addLayout(row1)
         
-        style_layout = QHBoxLayout()
-        style_layout.addWidget(QLabel("风格:"))
+        # 风格
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("输出风格:"))
         self.style_combo = QComboBox()
         self.style_combo.addItems(["驼峰式 (CamelCase)", "小写 (lowercase)", "大写 (UPPERCASE)"])
-        style_layout.addWidget(self.style_combo, 1)
-        options_layout.addLayout(style_layout)
+        row2.addWidget(self.style_combo)
+        opts_layout.addLayout(row2)
 
-        sep_layout = QHBoxLayout()
-        sep_layout.addWidget(QLabel("分隔符:"))
+        # 分隔符
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("分隔符:"))
         self.sep_edit = QLineEdit("_")
-        self.sep_edit.setMaximumWidth(100)
-        sep_layout.addWidget(self.sep_edit)
-        sep_layout.addStretch()
-        options_layout.addLayout(sep_layout)
-        layout.addWidget(options_group)
+        row3.addWidget(self.sep_edit)
+        opts_layout.addLayout(row3)
+        layout.addWidget(opts_group)
 
-        dict_group = QGroupBox("3. 自定义字典 (可选)")
-        dict_layout = QVBoxLayout(dict_group)
-        dict_input_layout = QHBoxLayout()
+        # 3. 字典
+        dict_group = QGroupBox("3. 高级 (字典)")
+        dict_layout = QHBoxLayout(dict_group)
         self.dict_edit = QLineEdit()
-        self.dict_edit.setPlaceholderText("选择 .json 字典文件...")
-        dict_input_layout.addWidget(self.dict_edit)
-        self.dict_browse_btn = QPushButton("...")
-        self.dict_browse_btn.setToolTip("浏览字典文件")
-        self.dict_browse_btn.clicked.connect(self.browse_dict)
-        dict_input_layout.addWidget(self.dict_browse_btn)
-        dict_layout.addLayout(dict_input_layout)
+        self.dict_edit.setPlaceholderText("可选: .json 字典")
+        dict_layout.addWidget(self.dict_edit)
+        self.dict_btn = QPushButton("...")
+        self.dict_btn.clicked.connect(self.browse_dict)
+        dict_layout.addWidget(self.dict_btn)
         layout.addWidget(dict_group)
         
         layout.addStretch()
 
-        action_group = QGroupBox("4. 执行操作")
-        button_layout = QHBoxLayout(action_group)
-        self.preview_btn = QPushButton("生成预览")
-        self.preview_btn.setStyleSheet("background-color: #DAA520; color: white;")
-        self.preview_btn.clicked.connect(lambda: self.start_operation(dry_run=True))
-        button_layout.addWidget(self.preview_btn)
+        # 4. 动作
+        act_group = QGroupBox("4. 操作")
+        act_layout = QHBoxLayout(act_group)
+        self.preview_btn = QPushButton("🔍 生成预览")
+        self.preview_btn.clicked.connect(lambda: self.start_worker(dry_run=True))
+        act_layout.addWidget(self.preview_btn)
         
-        self.execute_btn = QPushButton("执行重命名")
-        self.execute_btn.setStyleSheet("background-color: #c82333; color: white;")
-        self.execute_btn.clicked.connect(lambda: self.start_operation(dry_run=False))
-        button_layout.addWidget(self.execute_btn)
-        layout.addWidget(action_group)
+        self.run_btn = QPushButton("🚀 执行重命名")
+        self.run_btn.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold;")
+        self.run_btn.clicked.connect(lambda: self.start_worker(dry_run=False))
+        act_layout.addWidget(self.run_btn)
+        layout.addWidget(act_group)
         
         return panel
-    
+
     def create_output_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         splitter = QSplitter(Qt.Vertical)
         
-        preview_group = QGroupBox("预览结果")
-        preview_layout = QVBoxLayout(preview_group)
+        # 列表
         self.preview_list = QListWidget()
-        font = QFont("Consolas" if sys.platform == "win32" else "Menlo")
-        font.setPointSize(10)
-        self.preview_list.setFont(font)
-        preview_layout.addWidget(self.preview_list)
-        splitter.addWidget(preview_group)
+        self.preview_list.setFont(QFont("Consolas", 10))
+        splitter.addWidget(self.preview_list)
         
-        log_group = QGroupBox("详细日志")
-        log_layout = QVBoxLayout(log_group)
+        # 日志
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setFont(font)
-        log_layout.addWidget(self.log_text)
-        splitter.addWidget(log_group)
+        self.log_text.setFont(QFont("Consolas", 9))
+        splitter.addWidget(self.log_text)
         
-        splitter.setSizes([400, 200])
+        splitter.setSizes([450, 150])
         layout.addWidget(splitter)
         return panel
 
-    ##### VV VV VV VV VV 已修改此函数 VV VV VV VV VV #####
     def browse_path(self):
-        """浏览并选择一个目标文件夹，使用系统原生对话框。"""
-        # 检查当前输入框中是否为有效路径，作为对话框的起始位置
-        start_path = self.path_edit.text()
-        if not os.path.isdir(start_path):
-            start_path = "" # 如果不是有效目录，则使用默认位置
-
-        # 调用 QFileDialog.getExistingDirectory 静态方法
-        # 这个方法会打开一个只允许选择文件夹的原生系统对话框
-        path = QFileDialog.getExistingDirectory(
-            self,
-            "选择目标文件夹",
-            start_path # 对话框的初始路径
-        )
-        
-        # 如果用户成功选择了一个文件夹 (path 字符串不为空)
+        start = self.path_edit.text() if os.path.isdir(self.path_edit.text()) else ""
+        path = QFileDialog.getExistingDirectory(self, "选择文件夹", start)
         if path:
-            # QFileDialog 返回的路径使用正斜杠'/'，我们用 Path 转一下以适应当前系统
             self.path_edit.setText(str(Path(path)))
-    ##### ^^ ^^ ^^ ^^ ^^ 已修改此函数 ^^ ^^ ^^ ^^ ^^ #####
+            self.preview_list.clear()
 
     def browse_dict(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择字典文件", "", "JSON 文件 (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "选择字典", "", "JSON (*.json)")
         if path:
             self.dict_edit.setText(path)
-    
-    def clear_preview(self):
-        self.preview_list.clear()
 
-    def add_preview_item(self, old_name, new_name, status):
-        item = QListWidgetItem()
-        arrow = "->"
-        if status == "skip":
-            arrow = "=="
-            item.setForeground(QColor("gray"))
-            text = f"{old_name:<50} {arrow} (无需改动)"
-        elif status == "conflict":
-            item.setForeground(QColor("orange"))
-            text = f"{old_name:<50} {arrow} {new_name} (冲突！)"
-        else:
-            item.setForeground(QColor("#2E8B57"))
-            text = f"{old_name:<50} {arrow} {new_name}"
+    def start_worker(self, dry_run):
+        # 验证
+        path_str = self.path_edit.text().strip()
+        if not path_str or not Path(path_str).exists():
+            QMessageBox.warning(self, "提示", "请先选择有效的文件夹。")
+            return
 
-        item.setText(text)
-        self.preview_list.addItem(item)
-    
-    def start_operation(self, dry_run):
-        path_text = self.path_edit.text().strip()
-        if not path_text:
-            QMessageBox.warning(self, "警告", "请先选择目标路径！")
-            return
-        
-        target_path = Path(path_text)
-        if not target_path.exists():
-            QMessageBox.warning(self, "警告", "目标路径不存在！")
-            return
-        
-        if not dry_run:
-            reply = QMessageBox.question(self, "确认操作",
-                                           "这将永久性地重命名文件。\n你确定要继续吗？",
-                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.No:
-                return
-        
-        lang = "jp" if self.lang_combo.currentIndex() == 0 else "cn"
-        style_map = {"驼峰式 (CamelCase)": "camel", "小写 (lowercase)": "lower", "大写 (UPPERCASE)": "upper"}
-        style = style_map[self.style_combo.currentText()]
         sep = self.sep_edit.text()
-        recursive = self.recursive_cb.isChecked()
-        dict_file = self.dict_edit.text().strip()
-        
-        custom_dict = None
-        if dict_file:
-            custom_dict = load_dict(dict_file)
-            if custom_dict is None:
-                QMessageBox.critical(self, "错误", f"无法加载或解析字典文件: {dict_file}")
+        if re.search(ILLEGAL_CHARS_RE, sep):
+            QMessageBox.warning(self, "错误", "分隔符包含非法字符。")
+            return
+
+        if not dry_run:
+            if QMessageBox.Question != QMessageBox.question(self, "确认", "确定要执行重命名吗？此操作不可逆。", QMessageBox.Yes | QMessageBox.No):
                 return
 
-        if re.search(r'[<>:"/\\|?*\x00-\x1f]', sep):
-            QMessageBox.warning(self, "警告", "分隔符包含非法文件名字符！")
-            return
+        # 准备配置
+        custom_dict = None
+        dict_path = self.dict_edit.text().strip()
+        if dict_path:
+            custom_dict = load_dict(dict_path)
+            if custom_dict is None:
+                QMessageBox.warning(self, "错误", "字典文件读取失败，请检查格式。")
+                return
+
+        style_map = {"驼峰式 (CamelCase)": "camel", "小写 (lowercase)": "lower", "大写 (UPPERCASE)": "upper"}
         
-        self.set_controls_enabled(False)
-        self.log_text.clear()
+        config = {
+            'lang': "jp" if self.lang_combo.currentIndex() == 0 else "cn",
+            'style': style_map[self.style_combo.currentText()],
+            'sep': sep,
+            'custom_dict': custom_dict,
+            'recursive': self.recursive_cb.isChecked(),
+            'dry_run': dry_run
+        }
+
+        # UI 状态
+        self.set_ui_busy(True)
         self.preview_list.clear()
-        
-        self.worker = RenameWorker(target_path, lang, style, sep, custom_dict, recursive, dry_run)
-        self.worker.preview_item_signal.connect(self.add_preview_item)
-        self.worker.log_signal.connect(self.append_log)
-        self.worker.finished_signal.connect(self.operation_finished)
+        self.log_text.clear()
+
+        # 启动线程
+        self.worker = RenameWorker(Path(path_str), config)
+        self.worker.progress_signal.connect(self.on_worker_progress)
+        self.worker.log_signal.connect(self.log_text.append)
+        self.worker.finished_signal.connect(self.on_worker_finished)
         self.worker.start()
 
-    def append_log(self, message):
-        self.log_text.moveCursor(QTextCursor.End)
-        self.log_text.insertPlainText(message.rstrip('\n') + '\n')
-        self.log_text.moveCursor(QTextCursor.End)
+    def on_worker_progress(self, src, dst, status):
+        item_text = f"{src} -> {dst}"
+        item = QListWidgetItem(item_text)
+        
+        if status == "success":
+            item.setForeground(QColor("#228B22")) # Green
+        elif status == "skip":
+            item.setText(f"{src} (无变化)")
+            item.setForeground(QColor("#808080")) # Gray
+        elif status == "error":
+            item.setText(f"{src} [错误: {dst}]")
+            item.setForeground(QColor("#FF0000")) # Red
+            
+        self.preview_list.addItem(item)
+        self.preview_list.scrollToBottom()
 
-    def operation_finished(self, success, message):
-        self.set_controls_enabled(True)
-        self.log_text.append(f"\n--- {message} ---")
-        self.statusBar().showMessage(message, 5000)
+    def on_worker_finished(self, msg):
+        self.set_ui_busy(False)
+        self.statusBar().showMessage(msg, 5000)
+        QMessageBox.information(self, "完成", msg)
 
-    def set_controls_enabled(self, enabled):
-        """统一设置所有输入控件的启用状态"""
-        self.browse_btn.setEnabled(enabled)
-        self.dict_browse_btn.setEnabled(enabled)
-        self.preview_btn.setEnabled(enabled)
-        self.execute_btn.setEnabled(enabled)
-        self.path_edit.setEnabled(enabled)
-        self.dict_edit.setEnabled(enabled)
-        self.lang_combo.setEnabled(enabled)
-        self.style_combo.setEnabled(enabled)
-        self.sep_edit.setEnabled(enabled)
-        self.recursive_cb.setEnabled(enabled)
-
-    def closeEvent(self, event):
-        if self.worker and self.worker.isRunning():
-            reply = QMessageBox.question(self, "确认退出", "操作仍在进行中，确定要退出吗？",
-                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                self.worker.terminate()
-                self.worker.wait()
-                event.accept()
-            else:
-                event.ignore()
-        else:
-            event.accept()
-
+    def set_ui_busy(self, busy):
+        self.preview_btn.setEnabled(not busy)
+        self.run_btn.setEnabled(not busy)
+        self.browse_btn.setEnabled(not busy)
 
 def main():
     app = QApplication(sys.argv)
-    app.setStyle('Fusion')
     window = RomanizerGUI()
     window.show()
     sys.exit(app.exec())
