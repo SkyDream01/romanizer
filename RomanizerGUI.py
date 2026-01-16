@@ -220,7 +220,7 @@ class RomanizerGUI(QMainWindow):
             return
 
         if not dry_run:
-            if QMessageBox.Question != QMessageBox.question(self, "确认", "确定要执行重命名吗？此操作不可逆。", QMessageBox.Yes | QMessageBox.No):
+            if QMessageBox.No == QMessageBox.question(self, "确认", "确定要执行重命名吗？此操作不可逆。", QMessageBox.Yes | QMessageBox.No):
                 return
 
         # 准备配置
@@ -280,6 +280,13 @@ class RomanizerGUI(QMainWindow):
         self.preview_btn.setEnabled(not busy)
         self.run_btn.setEnabled(not busy)
         self.browse_btn.setEnabled(not busy)
+
+    def closeEvent(self, event):
+        """安全关闭窗口，终止后台线程"""
+        if self.worker and self.worker.isRunning():
+            self.worker.quit()
+            self.worker.wait(2000)  # 等待最多2秒
+        event.accept()
 
 def main():
     app = QApplication(sys.argv)
