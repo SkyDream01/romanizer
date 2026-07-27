@@ -21,6 +21,8 @@ except ImportError as e:
     print(f"错误：缺少必要的第三方库。请运行 'pip install pypinyin pykakasi'。", file=sys.stderr)
     sys.exit(1)
 
+__all__ = ["Romanizer", "load_dict", "ILLEGAL_CHARS_RE", "RESERVED_NAMES"]
+
 # ========== 预编译正则 (模块级常量) ==========
 # 匹配非法字符
 ILLEGAL_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -152,6 +154,7 @@ class Romanizer:
 
                 # 如果名字符合预期且未改变
                 if src == dst:
+                    seen_destinations.add(src)
                     yield src, dst, "skip"
                     continue
 
@@ -160,15 +163,9 @@ class Romanizer:
                 candidate = dst
                 n = 1
                 while candidate.exists() or candidate in seen_destinations:
-                    # 如果是原地覆盖（大小写转换常见于Windows），且不在seen中，则允许
-                    # 但要注意 Windows 下 rename('a.txt', 'A.TXT') 是允许的
-                    if candidate == src and candidate not in seen_destinations:
-                         break
-                    
-                    # 冲突，添加后缀
                     candidate = dst.with_stem(f"{dst.stem}-{n}")
                     n += 1
-                
+
                 final_dst = candidate
                 seen_destinations.add(final_dst)
 

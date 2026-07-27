@@ -1,7 +1,6 @@
 # RomanizerGUI.py (Optimized)
 
 import sys
-import os
 import re
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -196,7 +195,7 @@ class RomanizerGUI(QMainWindow):
         return panel
 
     def browse_path(self):
-        start = self.path_edit.text() if os.path.isdir(self.path_edit.text()) else ""
+        start = self.path_edit.text() if Path(self.path_edit.text()).is_dir() else ""
         path = QFileDialog.getExistingDirectory(self, "选择文件夹", start)
         if path:
             self.path_edit.setText(str(Path(path)))
@@ -280,12 +279,27 @@ class RomanizerGUI(QMainWindow):
         self.preview_btn.setEnabled(not busy)
         self.run_btn.setEnabled(not busy)
         self.browse_btn.setEnabled(not busy)
+        self.path_edit.setEnabled(not busy)
+        self.recursive_cb.setEnabled(not busy)
+        self.lang_combo.setEnabled(not busy)
+        self.style_combo.setEnabled(not busy)
+        self.sep_edit.setEnabled(not busy)
+        self.dict_edit.setEnabled(not busy)
+        self.dict_btn.setEnabled(not busy)
 
     def closeEvent(self, event):
         """安全关闭窗口，终止后台线程"""
         if self.worker and self.worker.isRunning():
+            reply = QMessageBox.question(
+                self, "确认",
+                "任务正在进行中，确定要中止并关闭吗？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply == QMessageBox.No:
+                event.ignore()
+                return
             self.worker.quit()
-            self.worker.wait(2000)  # 等待最多2秒
+            self.worker.wait(2000)
         event.accept()
 
 def main():
