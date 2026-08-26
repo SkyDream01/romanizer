@@ -10,7 +10,7 @@ A powerful batch file renamer to convert filenames with Chinese/Japanese charact
 
 ### 📜 Overview
 
-`romanizer.py` is a versatile command-line tool for batch renaming files. It specializes in converting filenames containing Chinese or Japanese characters into their romanized equivalents (Hanyu Pinyin for Chinese, Hepburn Romanization for Japanese), ensuring cross-platform compatibility and better organization.
+`romanizer.py` is a versatile command-line tool for batch renaming files. It specializes in converting filenames containing Chinese or Japanese characters into their romanized equivalents (Hanyu Pinyin for Chinese, Hepburn Romanization for Japanese), ensuring cross-platform compatibility and better organization. It can also romanize embedded audio metadata tags (title, artist, album, etc.) for MP3, FLAC, OGG, M4A and other formats.
 
 ### ✨ Features
 
@@ -22,11 +22,13 @@ A powerful batch file renamer to convert filenames with Chinese/Japanese charact
 -   **Conflict Resolution**: Automatically adds numerical suffixes (`file-1.txt`, `file-2.txt`) to prevent overwriting.
 -   **Dry-Run Mode**: Preview changes before applying, with detailed output.
 -   **Directory Control**: Recursive subdirectory processing via `-r` option.
+-   **Audio Metadata Romanization**: Romanizes embedded metadata tags (title, artist, album, genre, etc.) in audio files. Supports MP3, FLAC, OGG, Opus, M4A, AAC, WAV, WMA, AIFF, and more. Can work standalone (`--meta-only`) or combined with file renaming (`--meta`). Automatic `.bak` backup before modification.
 
 ### 📋 Requirements
 
 -   Python 3.10+
 -   Third-party libraries: `pypinyin`, `pykakasi`
+-   Optional: `mutagen` (for audio metadata romanization)
 
 ### 🛠️ Installation
 
@@ -35,7 +37,12 @@ A powerful batch file renamer to convert filenames with Chinese/Japanese charact
 2. Install the required Python packages:
    ```bash
    pip install pypinyin pykakasi
-```
+   ```
+
+   For audio metadata romanization, also install:
+   ```bash
+   pip install mutagen
+   ```
 
 ### 🚀 Usage
 
@@ -57,6 +64,9 @@ python romanizer.py [PATH] [OPTIONS]
 - `-d`, `--dict`: Path to JSON dictionary file for custom replacements.
 - `-r`, `--recursive`: Recursively process subdirectories.
 - `--dry-run`: Preview changes without renaming.
+- `--meta`: Also romanize audio metadata tags when renaming files.
+- `--meta-only`: Only romanize audio metadata tags, without renaming files.
+- `--no-backup`: Skip creating `.bak` backup files when modifying metadata.
 
 #### Examples
 
@@ -121,13 +131,38 @@ python romanizer.py [PATH] [OPTIONS]
    - CON.txt → CON_.txt  (Windows compatible)
    ```
 
+6. **Audio Metadata Romanization (standalone):**
+
+   ```bash
+   python romanizer.py /path/to/music --meta-only --dry-run
+   ```
+
+   Output:
+   ```
+   [预览] 東京タワー.mp3
+     title: 東京タワー -> toukyou tawaa
+     artist: 初音ミク -> hatsune miku
+   ```
+
+7. **Rename + Audio Metadata (combined):**
+
+   ```bash
+   python romanizer.py /path/to/music --meta --dry-run
+   ```
+
+   Output:
+   ```
+   [预览] 東京タワー.mp3 -> ToukyouTawa.mp3
+     [元数据] title: 東京タワー -> toukyou tawaa
+   ```
+
 ---
 
 ## 中文 (Chinese)
 
 ### 📜 概述
 
-`romanizer.py` 是一个功能强大的命令行工具，用于批量重命名文件。它专门将包含中文或日文的文件名转换为对应的罗马字母表示形式（中文转为汉语拼音，日文转为平文式罗马字），从而确保文件名的跨平台兼容性并优化文件组织。
+`romanizer.py` 是一个功能强大的命令行工具，用于批量重命名文件。它专门将包含中文或日文的文件名转换为对应的罗马字母表示形式（中文转为汉语拼音，日文转为平文式罗马字），从而确保文件名的跨平台兼容性并优化文件组织。同时支持罗马化音频文件的嵌入元数据标签（标题、艺术家、专辑等），兼容 MP3、FLAC、OGG、M4A 等主流格式。
 
 ### ✨ 功能特性
 
@@ -139,11 +174,13 @@ python romanizer.py [PATH] [OPTIONS]
 -   **冲突解决**: 目标文件名冲突时自动添加数字后缀 (`file-1.txt`, `file-2.txt`)。
 -   **预览模式 (Dry-Run)**: 带详细输出的预执行预览。
 -   **目录控制**: 通过 `-r` 选项递归处理子目录。
+-   **音频元数据罗马化**: 罗马化音频文件的嵌入元数据标签（标题、艺术家、专辑、流派等）。支持 MP3、FLAC、OGG、Opus、M4A、AAC、WAV、WMA、AIFF 等格式。可独立使用（`--meta-only`）或配合重命名（`--meta`），修改前自动创建 `.bak` 备份。
 
 ### 📋 环境要求
 
 -   Python 3.10+
 -   第三方库: `pypinyin`, `pykakasi`
+-   可选: `mutagen`（音频元数据罗马化功能）
 
 ### 🛠️ 安装
 
@@ -157,6 +194,11 @@ python romanizer.py [PATH] [OPTIONS]
 
    ```bash
    pip install pypinyin pykakasi
+   ```
+
+   如需音频元数据罗马化功能，还需安装：
+   ```bash
+   pip install mutagen
    ```
 
 ### 🚀 使用方法
@@ -179,6 +221,9 @@ python romanizer.py [路径] [选项]
 - `-d`, `--dict`: 自定义替换字典的 JSON 文件路径。
 - `-r`, `--recursive`: 递归处理子目录。
 - `--dry-run`: 仅预览，不执行操作。
+- `--meta`: 重命名同时罗马化音频元数据标签。
+- `--meta-only`: 仅罗马化音频元数据标签，不重命名文件。
+- `--no-backup`: 修改元数据时不创建 `.bak` 备份文件。
 
 #### 示例
 
@@ -242,13 +287,38 @@ python romanizer.py [路径] [选项]
    - CON.txt → CON_.txt  (Windows兼容)
    ```
 
+6. **独立音频元数据罗马化（预览）：**
+
+   ```bash
+   python romanizer.py /path/to/music --meta-only --dry-run
+   ```
+
+   输出：
+   ```
+   [处理] 東京タワー.mp3
+     title: 東京タワー -> toukyou tawaa
+     artist: 初音ミク -> hatsune miku
+   ```
+
+7. **重命名 + 音频元数据罗马化（组合模式）：**
+
+   ```bash
+   python romanizer.py /path/to/music --meta --dry-run
+   ```
+
+   输出：
+   ```
+   [预览] 東京タワー.mp3 -> ToukyouTawa.mp3
+     [元数据] title: 東京タワー -> toukyou tawaa
+   ```
+
 ---
 
 ## 日本語 (Japanese)
 
 ### 📜 概要
 
-`romanizer.py`は、ファイル名を一括でリネームするための強力なコマンドラインツールです。特に、日本語や中国語の文字を含むファイル名を、それぞれのローマ字表記（日本語はヘボン式、中国語は漢語拼音）に変換することに特化しており、クロスプラットフォームでの互換性を確保し、ファイル整理を効率化します。
+`romanizer.py`は、ファイル名を一括でリネームするための強力なコマンドラインツールです。特に、日本語や中国語の文字を含むファイル名を、それぞれのローマ字表記（日本語はヘボン式、中国語は漢語拼音）に変換することに特化しており、クロスプラットフォームでの互換性を確保し、ファイル整理を効率化します。また、MP3、FLAC、OGG、M4Aなどの主要フォーマットのオーディオファイルのメタデータタグ（タイトル、アーティスト、アルバムなど）のローマ字化にも対応しています。
 
 ### ✨ 主な機能
 
@@ -260,11 +330,13 @@ python romanizer.py [路径] [选项]
 -   **競合解決**: ファイル名重複時に数字を追加します (`file-1.txt`)。
 -   **プレビューモード (Dry-Run)**: 変更内容を適用前に確認可能。
 -   **ディレクトリ制御**: `-r`オプションでサブディレクトリを再帰処理。
+-   **オーディオメタデータのローマ字化**: オーディオファイルの埋め込みメタデータタグ（タイトル、アーティスト、アルバム、ジャンルなど）をローマ字化します。MP3、FLAC、OGG、Opus、M4A、AAC、WAV、WMA、AIFF等に対応。単独使用（`--meta-only`）またはリネームとの併用（`--meta`）が可能。変更前に`.bak`バックアップを自動作成。
 
 ### 📋 動作環境
 
 -   Python 3.10以降
 -   サードパーティライブラリ: `pypinyin`, `pykakasi`
+-   オプション: `mutagen`（オーディオメタデータのローマ字化機能用）
 
 ### 🛠️ インストール
 
@@ -278,6 +350,11 @@ python romanizer.py [路径] [选项]
 
    ```bash
    pip install pypinyin pykakasi
+   ```
+
+   オーディオメタデータのローマ字化機能が必要な場合:
+   ```bash
+   pip install mutagen
    ```
 
 ### 🚀 使用方法
@@ -300,6 +377,9 @@ python romanizer.py [パス] [オプション]
 - `-d`, `--dict`: カスタム辞書(JSON)のパス。
 - `-r`, `--recursive`: サブディレクトリを再帰処理。
 - `--dry-run`: プレビューモード（実際に変更を加えません）。
+- `--meta`: リネームと同時にオーディオメタデータタグをローマ字化。
+- `--meta-only`: オーディオメタデータタグのみローマ字化（ファイル名は変更しない）。
+- `--no-backup`: メタデータ変更時に`.bak`バックアップを作成しない。
 
 #### 使用例
 
@@ -361,6 +441,31 @@ python romanizer.py [パス] [オプション]
 
    ```diff
    - CON.png -> CON_.png  (Windows互換)
+   ```
+
+6. **オーディオメタデータのローマ字化（プレビュー）:**
+
+   ```bash
+   python romanizer.py /path/to/music --meta-only --dry-run
+   ```
+
+   出力:
+   ```
+   [処理] 東京タワー.mp3
+     title: 東京タワー -> toukyou tawaa
+     artist: 初音ミク -> hatsune miku
+   ```
+
+7. **リネーム + メタデータローマ字化（併用）:**
+
+   ```bash
+   python romanizer.py /path/to/music --meta --dry-run
+   ```
+
+   出力:
+   ```
+   [プレビュー] 東京タワー.mp3 -> ToukyouTawa.mp3
+     [メタデータ] title: 東京タワー -> toukyou tawaa
    ```
 
 ---

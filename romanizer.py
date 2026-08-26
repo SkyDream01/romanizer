@@ -183,6 +183,14 @@ class Romanizer:
                 # 利用 dst_path 位置传递错误信息
                 yield src, Path(str(e)), "error"
 
+# ========== 可选依赖导入（避免循环引用） ==========
+try:
+    from meta_romanizer import MetaRomanizer, AUDIO_EXTENSIONS
+    HAS_MUTAGEN = True
+except ImportError:
+    HAS_MUTAGEN = False
+    AUDIO_EXTENSIONS = set()
+
 # ========== 辅助函数 (保持向下兼容) ==========
 
 def load_dict(dict_file: str) -> Optional[Dict[str, str]]:
@@ -206,8 +214,19 @@ def main():
     parser.add_argument("-d", "--dict", help="自定义字典路径")
     parser.add_argument("-r", "--recursive", action="store_true", help="递归处理")
     parser.add_argument("--dry-run", action="store_true", help="预览模式")
+    parser.add_argument("--meta", action="store_true", help="重命名同时罗马化音频元数据标签")
+    parser.add_argument("--meta-only", action="store_true", help="仅罗马化音频元数据标签，不重命名文件")
+    parser.add_argument("--no-backup", action="store_true", help="修改元数据时不创建备份文件")
     
     args = parser.parse_args()
+    
+    if (args.meta or args.meta_only) and not HAS_MUTAGEN:
+        print("错误: 音频元数据功能需要 mutagen 库。请运行 'pip install mutagen'。", file=sys.stderr)
+        sys.exit(1)
+    
+    if args.meta and args.meta_only:
+        print("错误: --meta 和 --meta-only 不能同时使用。", file=sys.stderr)
+        sys.exit(1)
     
     if re.search(ILLEGAL_CHARS_RE, args.sep):
         print(f"错误: 分隔符 '{args.sep}' 非法。", file=sys.stderr)
@@ -223,23 +242,81 @@ def main():
     # 实例化转换器
     converter = Romanizer(args.lang, args.style, args.sep, custom_dict)
     
-    print(f"正在处理: {target_path} (模式: {'预览' if args.dry_run else '执行'})")
-    print("-" * 40)
-    
-    count = 0
-    # 直接迭代生成器
-    for src, dst, status in converter.process_items(target_path, args.recursive, args.dry_run):
-        if status == "skip":
-            print(f"[跳过] {src.name}")
-        elif status == "error":
-            print(f"[错误] {src.name}: {dst}") # dst 这里存的是错误信息
-        else:
-            action = "预览" if args.dry_run else "重命名"
-            print(f"[{action}] {src.name} -> {dst.name}")
-            count += 1
-            
-    print("-" * 40)
-    print(f"完成。共处理 {count} 个文件。")
+    if args.meta_only:
+        # 独立元数据罗马化模式
+        mode_str = "预览" if args.dry_run else "执行"
+        print(f"正在处理音频元数据: {target_path} (模式: {mode_str})")
+        print("-" * 40)
+        meta = MetaRomanizer(romanizer=converter, backup=not args.no_backup)
+        count = 0
+        for filepath, changes, status in meta.process_items(target_path, args.recursive, args.dry_run):
+            if status == "unsupported":
+                continue
+            elif status == "skip":
+                print(f"[跳过] {filepath.name}: 无需更改")
+            elif status == "error":
+                print(f"[错误] {filepath.name}: {changes}")
+            else:
+                action = "预览" if args.dry_run else "处理"
+                print(f"[{action}] {filepath.name}")
+                for field, (old_vals, new_vals) in changes.items():
+                    for o, n in zip(old_vals, new_vals):
+                        print(f"  {field}: {o} -> {n}")
+                count += 1
+        print("-" * 40)
+        print(f"完成。共处理 {count} 个音频文件的元数据。")
+
+    elif args.meta:
+        # 组合模式：重命名 + 元数据罗马化
+        mode_str = "预览" if args.dry_run else "执行"
+        print(f"正在处理: {target_path} (模式: {mode_str}, 含音频元数据)")
+        print("-" * 40)
+        meta = MetaRomanizer(romanizer=converter, backup=not args.no_backup)
+        count = 0
+        meta_count = 0
+        for src, dst, status in converter.process_items(target_path, args.recursive, args.dry_run):
+            if status == "skip":
+                print(f"[跳过] {src.name}")
+            elif status == "error":
+                print(f"[错误] {src.name}: {dst}")
+            else:
+                action = "预览" if args.dry_run else "重命名"
+                print(f"[{action}] {src.name} -> {dst.name}")
+                count += 1
+
+            # 对音频文件处理元数据（dry-run 时用 src，实际执行时用 dst）
+            if args.dry_run or status == "error":
+                target_file = src
+            else:
+                target_file = dst
+            if target_file.suffix.lower() in AUDIO_EXTENSIONS:
+                result = meta.romanize_metadata(target_file, dry_run=args.dry_run)
+                if result["status"] == "success" and result["changes"]:
+                    print(f"  [元数据] 已修改 {len(result['changes'])} 个字段")
+                    for field, (old_vals, new_vals) in result["changes"].items():
+                        for o, n in zip(old_vals, new_vals):
+                            print(f"    {field}: {o} -> {n}")
+                    meta_count += 1
+
+        print("-" * 40)
+        print(f"完成。重命名 {count} 个文件，元数据处理 {meta_count} 个文件。")
+
+    else:
+        # 原有重命名模式（不变）
+        print(f"正在处理: {target_path} (模式: {'预览' if args.dry_run else '执行'})")
+        print("-" * 40)
+        count = 0
+        for src, dst, status in converter.process_items(target_path, args.recursive, args.dry_run):
+            if status == "skip":
+                print(f"[跳过] {src.name}")
+            elif status == "error":
+                print(f"[错误] {src.name}: {dst}")
+            else:
+                action = "预览" if args.dry_run else "重命名"
+                print(f"[{action}] {src.name} -> {dst.name}")
+                count += 1
+        print("-" * 40)
+        print(f"完成。共处理 {count} 个文件。")
 
 if __name__ == "__main__":
     main()

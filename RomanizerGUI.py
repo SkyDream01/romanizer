@@ -17,6 +17,13 @@ except ImportError:
     QMessageBox.critical(None, "错误", "无法导入 'romanizer.py'。")
     sys.exit(1)
 
+try:
+    from meta_romanizer import MetaRomanizer, AUDIO_EXTENSIONS
+    HAS_MUTAGEN = True
+except ImportError:
+    HAS_MUTAGEN = False
+    AUDIO_EXTENSIONS = set()
+
 class RenameWorker(QThread):
     """
     后台工作线程
@@ -45,31 +52,98 @@ class RenameWorker(QThread):
             )
             
             mode_str = "预览" if self.config['dry_run'] else "执行"
-            self.log_signal.emit(f"开始{mode_str}处理...\n")
 
-            count = 0
-            # 调用核心生成器
-            iterator = converter.process_items(
-                self.target_path, 
-                self.config['recursive'], 
-                self.config['dry_run']
-            )
+            if self.config.get('meta_only'):
+                # 独立元数据罗马化模式
+                self.log_signal.emit(f"开始{mode_str}音频元数据处理...\n")
+                meta = MetaRomanizer(
+                    romanizer=converter,
+                    backup=not self.config.get('no_backup', False)
+                )
+                count = 0
+                for filepath, changes, status in meta.process_items(
+                    self.target_path, self.config['recursive'], self.config['dry_run']
+                ):
+                    if status == "unsupported":
+                        continue
+                    elif status == "skip":
+                        self.progress_signal.emit(filepath.name, "无变化", "skip")
+                    elif status == "error":
+                        self.log_signal.emit(f"[错误] {filepath.name}: {changes}")
+                        self.progress_signal.emit(filepath.name, str(changes), "error")
+                    else:
+                        self.log_signal.emit(f"[元数据] {filepath.name}")
+                        for field, (old_vals, new_vals) in changes.items():
+                            for o, n in zip(old_vals, new_vals):
+                                self.log_signal.emit(f"  {field}: {o} -> {n}")
+                        self.progress_signal.emit(filepath.name, f"{len(changes)} 个字段", "success")
+                        count += 1
+                self.finished_signal.emit(f"{mode_str}完成，处理了 {count} 个音频文件的元数据。")
 
-            for src, dst, status in iterator:
-                if status == "error":
-                    self.log_signal.emit(f"[错误] {src.name}: {dst}")
-                    self.progress_signal.emit(src.name, str(dst), "error")
-                elif status == "skip":
-                    # 只有在非Dry-Run或者用户需要看skip详情时才发信号，防止列表过长
-                    # 这里为了演示，我们发信号并在GUI处理显示颜色
-                    self.progress_signal.emit(src.name, dst.name, "skip")
-                else:
-                    arrow = "->"
-                    self.log_signal.emit(f"{src.name} {arrow} {dst.name}")
-                    self.progress_signal.emit(src.name, dst.name, "success")
-                    count += 1
-            
-            self.finished_signal.emit(f"{mode_str}完成，涉及 {count} 个文件。")
+            elif self.config.get('meta'):
+                # 组合模式：重命名 + 元数据罗马化
+                self.log_signal.emit(f"开始{mode_str}处理（含音频元数据）...\n")
+                meta = MetaRomanizer(
+                    romanizer=converter,
+                    backup=not self.config.get('no_backup', False)
+                )
+                count = 0
+                meta_count = 0
+                for src, dst, status in converter.process_items(
+                    self.target_path, self.config['recursive'], self.config['dry_run']
+                ):
+                    if status == "error":
+                        self.log_signal.emit(f"[错误] {src.name}: {dst}")
+                        self.progress_signal.emit(src.name, str(dst), "error")
+                    elif status == "skip":
+                        self.progress_signal.emit(src.name, dst.name, "skip")
+                    else:
+                        arrow = "->"
+                        self.log_signal.emit(f"{src.name} {arrow} {dst.name}")
+                        self.progress_signal.emit(src.name, dst.name, "success")
+                        count += 1
+
+                    # 处理音频元数据（dry-run 时用 src，实际执行时用 dst）
+                    if self.config['dry_run'] or status == "error":
+                        target_file = src
+                    else:
+                        target_file = dst
+                    if target_file.suffix.lower() in AUDIO_EXTENSIONS:
+                        result = meta.romanize_metadata(target_file, dry_run=self.config['dry_run'])
+                        if result["status"] == "success" and result["changes"]:
+                            self.log_signal.emit(f"  [元数据] {target_file.name}: {len(result['changes'])} 个字段")
+                            for field, (old_vals, new_vals) in result["changes"].items():
+                                for o, n in zip(old_vals, new_vals):
+                                    self.log_signal.emit(f"    {field}: {o} -> {n}")
+                            meta_count += 1
+
+                self.finished_signal.emit(
+                    f"{mode_str}完成，重命名 {count} 个文件，元数据处理 {meta_count} 个文件。"
+                )
+
+            else:
+                # 原有重命名模式（不变）
+                self.log_signal.emit(f"开始{mode_str}处理...\n")
+                count = 0
+                iterator = converter.process_items(
+                    self.target_path, 
+                    self.config['recursive'], 
+                    self.config['dry_run']
+                )
+
+                for src, dst, status in iterator:
+                    if status == "error":
+                        self.log_signal.emit(f"[错误] {src.name}: {dst}")
+                        self.progress_signal.emit(src.name, str(dst), "error")
+                    elif status == "skip":
+                        self.progress_signal.emit(src.name, dst.name, "skip")
+                    else:
+                        arrow = "->"
+                        self.log_signal.emit(f"{src.name} {arrow} {dst.name}")
+                        self.progress_signal.emit(src.name, dst.name, "success")
+                        count += 1
+                
+                self.finished_signal.emit(f"{mode_str}完成，涉及 {count} 个文件。")
             
         except Exception as e:
             self.log_signal.emit(f"\n致命错误: {e}")
@@ -78,7 +152,7 @@ class RenameWorker(QThread):
 class RomanizerGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Romanizer - 文件名罗马音转换工具 (Optimized)")
+        self.setWindowTitle("Romanizer - 文件名罗马音转换 & 音频元数据罗马化")
         self.setGeometry(100, 100, 1000, 700)
         self.setup_ui()
         self.worker = None
@@ -156,11 +230,43 @@ class RomanizerGUI(QMainWindow):
         self.dict_btn.clicked.connect(self.browse_dict)
         dict_layout.addWidget(self.dict_btn)
         layout.addWidget(dict_group)
+
+        # 4. 音频元数据
+        meta_group = QGroupBox("4. 音频元数据")
+        meta_layout = QVBoxLayout(meta_group)
+
+        self.meta_cb = QCheckBox("同时罗马化音频元数据 (标题/艺术家/专辑等)")
+        self.meta_cb.setToolTip("对 MP3/FLAC/OGG/M4A 等音频文件的内嵌标签进行罗马化")
+        self.meta_cb.setEnabled(HAS_MUTAGEN)
+        if not HAS_MUTAGEN:
+            self.meta_cb.setToolTip("需要安装 mutagen 库: pip install mutagen")
+        meta_layout.addWidget(self.meta_cb)
+
+        meta_btn_layout = QHBoxLayout()
+        self.meta_preview_btn = QPushButton("预览音频元数据")
+        self.meta_preview_btn.setToolTip("不重命名文件，仅预览音频元数据的罗马化结果")
+        self.meta_preview_btn.setEnabled(HAS_MUTAGEN)
+        self.meta_preview_btn.clicked.connect(lambda: self.start_meta_only(dry_run=True))
+        meta_btn_layout.addWidget(self.meta_preview_btn)
+
+        self.meta_run_btn = QPushButton("执行元数据罗马化")
+        self.meta_run_btn.setStyleSheet("background-color: #f0ad4e; color: white; font-weight: bold;")
+        self.meta_run_btn.setEnabled(HAS_MUTAGEN)
+        self.meta_run_btn.clicked.connect(lambda: self.start_meta_only(dry_run=False))
+        meta_btn_layout.addWidget(self.meta_run_btn)
+        meta_layout.addLayout(meta_btn_layout)
+
+        if not HAS_MUTAGEN:
+            meta_hint = QLabel("提示: pip install mutagen 以启用此功能")
+            meta_hint.setStyleSheet("color: gray; font-size: 11px;")
+            meta_layout.addWidget(meta_hint)
+
+        layout.addWidget(meta_group)
         
         layout.addStretch()
 
-        # 4. 动作
-        act_group = QGroupBox("4. 操作")
+        # 5. 动作
+        act_group = QGroupBox("5. 操作")
         act_layout = QHBoxLayout(act_group)
         self.preview_btn = QPushButton("🔍 生成预览")
         self.preview_btn.clicked.connect(lambda: self.start_worker(dry_run=True))
@@ -206,6 +312,53 @@ class RomanizerGUI(QMainWindow):
         if path:
             self.dict_edit.setText(path)
 
+    def start_meta_only(self, dry_run):
+        path_str = self.path_edit.text().strip()
+        if not path_str or not Path(path_str).exists():
+            QMessageBox.warning(self, "提示", "请先选择有效的文件夹。")
+            return
+
+        if not HAS_MUTAGEN:
+            QMessageBox.warning(self, "错误", "需要安装 mutagen 库才能处理音频元数据。\npip install mutagen")
+            return
+
+        if not dry_run:
+            if QMessageBox.No == QMessageBox.question(
+                self, "确认", "确定要修改音频文件的元数据吗？建议先预览。",
+                QMessageBox.Yes | QMessageBox.No
+            ):
+                return
+
+        style_map = {"驼峰式 (CamelCase)": "camel", "小写 (lowercase)": "lower", "大写 (UPPERCASE)": "upper"}
+        sep = self.sep_edit.text()
+
+        custom_dict = None
+        dict_path = self.dict_edit.text().strip()
+        if dict_path:
+            custom_dict = load_dict(dict_path)
+
+        config = {
+            'lang': "jp" if self.lang_combo.currentIndex() == 0 else "cn",
+            'style': style_map[self.style_combo.currentText()],
+            'sep': sep,
+            'custom_dict': custom_dict,
+            'recursive': self.recursive_cb.isChecked(),
+            'dry_run': dry_run,
+            'meta': False,
+            'meta_only': True,
+            'no_backup': False,
+        }
+
+        self.set_ui_busy(True)
+        self.preview_list.clear()
+        self.log_text.clear()
+
+        self.worker = RenameWorker(Path(path_str), config)
+        self.worker.progress_signal.connect(self.on_worker_progress)
+        self.worker.log_signal.connect(self.log_text.append)
+        self.worker.finished_signal.connect(self.on_worker_finished)
+        self.worker.start()
+
     def start_worker(self, dry_run):
         # 验证
         path_str = self.path_edit.text().strip()
@@ -239,7 +392,10 @@ class RomanizerGUI(QMainWindow):
             'sep': sep,
             'custom_dict': custom_dict,
             'recursive': self.recursive_cb.isChecked(),
-            'dry_run': dry_run
+            'dry_run': dry_run,
+            'meta': self.meta_cb.isChecked() if HAS_MUTAGEN else False,
+            'meta_only': False,
+            'no_backup': False,
         }
 
         # UI 状态
@@ -255,17 +411,17 @@ class RomanizerGUI(QMainWindow):
         self.worker.start()
 
     def on_worker_progress(self, src, dst, status):
-        item_text = f"{src} -> {dst}"
-        item = QListWidgetItem(item_text)
-        
         if status == "success":
-            item.setForeground(QColor("#228B22")) # Green
+            item = QListWidgetItem(f"{src} -> {dst}")
+            item.setForeground(QColor("#228B22"))
         elif status == "skip":
-            item.setText(f"{src} (无变化)")
-            item.setForeground(QColor("#808080")) # Gray
+            item = QListWidgetItem(f"{src} (无变化)")
+            item.setForeground(QColor("#808080"))
         elif status == "error":
-            item.setText(f"{src} [错误: {dst}]")
-            item.setForeground(QColor("#FF0000")) # Red
+            item = QListWidgetItem(f"{src} [错误: {dst}]")
+            item.setForeground(QColor("#FF0000"))
+        else:
+            item = QListWidgetItem(f"{src} -> {dst}")
             
         self.preview_list.addItem(item)
         self.preview_list.scrollToBottom()
@@ -286,6 +442,10 @@ class RomanizerGUI(QMainWindow):
         self.sep_edit.setEnabled(not busy)
         self.dict_edit.setEnabled(not busy)
         self.dict_btn.setEnabled(not busy)
+        if HAS_MUTAGEN:
+            self.meta_cb.setEnabled(not busy)
+            self.meta_preview_btn.setEnabled(not busy)
+            self.meta_run_btn.setEnabled(not busy)
 
     def closeEvent(self, event):
         """安全关闭窗口，终止后台线程"""
